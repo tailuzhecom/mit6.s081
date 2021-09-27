@@ -23,6 +23,8 @@ struct {
   struct run *freelist;
 } kmem;
 
+
+
 void
 kinit()
 {
@@ -30,15 +32,18 @@ kinit()
   freerange(end, (void*)PHYSTOP);
 }
 
+// freelist初始化
 void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
+  // 内存对齐
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
 }
 
+// 将空闲页插入freelist
 // Free the page of physical memory pointed at by v,
 // which normally should have been returned by a
 // call to kalloc().  (The exception is when
@@ -79,4 +84,20 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+// 获取空闲内存容量
+uint64 get_free_memory_info() {
+  struct run *r;
+  int freelist_size = 0;
+  
+  acquire(&kmem.lock);
+  r = kmem.freelist;
+  while (r) {
+    freelist_size++;
+    r = r->next;
+  }
+  uint64 res = freelist_size * PGSIZE;
+  release(&kmem.lock);
+  return res;
 }
