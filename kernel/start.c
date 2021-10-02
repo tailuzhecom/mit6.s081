@@ -7,6 +7,7 @@
 void main();
 void timerinit();
 
+// 每个stack 4096 bytes
 // entry.S needs one stack per CPU.
 __attribute__ ((aligned (16))) char stack0[4096 * NCPU];
 

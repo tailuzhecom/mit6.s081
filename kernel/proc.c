@@ -34,9 +34,11 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
+
       char *pa = kalloc();
       if(pa == 0)
         panic("kalloc");
+      // process对应的kstack的va
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
@@ -94,6 +96,7 @@ allocproc(void)
 {
   struct proc *p;
 
+  // 在process数组中寻找一个UNUSED的process
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
     if(p->state == UNUSED) {
@@ -127,6 +130,12 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // 每个process都分配一个kernel page table
+  p->kpagetable = kvmcreate();
+
+  // 建立kernel stack在process kpagepage上的映射
+  new_kvmmap(p->kpagetable, p->kstack, (uint64)kvmpa(p->kstack), PGSIZE, PTE_R | PTE_W);
+
   return p;
 }
 
@@ -150,6 +159,13 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  
+  // 释放kernel page table
+  if (p->kpagetable) {
+    new_freewalk(p->kpagetable, 1);
+    p->kpagetable = 0;
+  }
+  
 }
 
 // Create a user page table for a given process,
@@ -168,6 +184,7 @@ proc_pagetable(struct proc *p)
   // at the highest user virtual address.
   // only the supervisor uses it, on the way
   // to/from user space, so not PTE_U.
+  // 建立TRAMPOLINE的映射
   if(mappages(pagetable, TRAMPOLINE, PGSIZE,
               (uint64)trampoline, PTE_R | PTE_X) < 0){
     uvmfree(pagetable, 0);
@@ -175,6 +192,7 @@ proc_pagetable(struct proc *p)
   }
 
   // map the trapframe just below TRAMPOLINE, for trampoline.S.
+  // 建立trapframe的映射
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
               (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
@@ -229,6 +247,7 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
+  copyuvm2kvm(p->pagetable, p->kpagetable, 0, p->sz);
 
   release(&p->lock);
 }
@@ -249,7 +268,11 @@ growproc(int n)
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
+  
+  // 拷贝uvm到kvm
+  copyuvm2kvm(p->pagetable, p->kpagetable, p->sz, sz);
   p->sz = sz;
+
   return 0;
 }
 
@@ -294,6 +317,13 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
+
+  // 拷贝uvm到kvm
+  if (copyuvm2kvm(np->pagetable, np->kpagetable, 0, p->sz) < 0) {
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
 
   release(&np->lock);
 
@@ -473,10 +503,14 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        // vmprint(p->pagetable);
+        pageon(p->kpagetable);
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
+        kvminithart();
+
         c->proc = 0;
 
         found = 1;
@@ -487,6 +521,7 @@ scheduler(void)
     if(found == 0) {
       intr_on();
       asm volatile("wfi");
+      // kvminithart();
     }
 #else
     ;

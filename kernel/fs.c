@@ -458,8 +458,11 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
   uint tot, m;
   struct buf *bp;
 
+  // 如果设置的偏移量超过了文件的大小
   if(off > ip->size || off + n < off)
     return 0;
+  
+  // 如果需要读取的内容超过了文件的长度，对读取内容进行截断
   if(off + n > ip->size)
     n = ip->size - off;
 
