@@ -1,0 +1,39 @@
+* Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+```
+ai寄存器负责记录函数的传入参数，a2寄存器保存13
+```
+* Where is the call to function f in the assembly code for main? Where is the call to g? (Hint: the compiler may inline functions.)
+```
+main的汇编代码中不存在调用f函数的地方，也没有调用g函数的地方，在编译的过程中编译器对调用f函数的代码进行的内联优化，直接将对应的表达的值计算了出来。
+```
+* At what address is the function printf located?
+```
+0x630
+有两种方法可以查看printf的地址，第一种方法是直接在汇编里面看printf符号对应的位置。第二种方法是根据指令推测，auipc ra, 0x0 -> ra = pc + 0x0 << 12 = 0x30，jalr 1536(ra) -> 跳到的地址为1536 + 0x30 = 0x630
+
+auipc指令：立即数左移12位，和pc的值相加赋给指定的寄存器
+jalr r # $ra <— PC+4 $ra <— return address
+# PC <— $r load the PC with the address in $r
+```
+* What value is in the register ra just after the jalr to printf in main?
+```
+0x38
+```
+* Run the following code.
+```
+	unsigned int i = 0x00646c72;
+	printf("H%x Wo%s", 57616, &i);
+```
+What is the output? Here's an ASCII table that maps bytes to characters.
+The output depends on that fact that the RISC-V is little-endian. If the RISC-V were instead big-endian what would you set i to in order to yield the same output? Would you need to change 57616 to a different value?
+```
+output为He110 World，57616使用十六进制标识，无符号整型i使用字符串的形式输出，由于RISC-V是小端，所以对应的字符为'0x72','0x6c','0x64'
+如果RISC-V是大端，上述代码需要输出同样的结果，那么需要把i设为0x726c6400，不需要改变57616的值
+```
+* In the following code, what is going to be printed after 'y='? (note: the answer is not a specific value.) Why does this happen?
+```
+	printf("x=%d y=%d", 3);
+```
+```
+输出不确定值，取决于当时a2寄存器的值
+```
