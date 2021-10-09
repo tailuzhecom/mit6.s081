@@ -274,6 +274,7 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+  np->heap_base = p->heap_base;
 
   np->parent = p;
 

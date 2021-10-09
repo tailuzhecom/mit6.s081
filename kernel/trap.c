@@ -29,6 +29,28 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+// 为vm分配物理内容
+int lazyalloc(pagetable_t pagetable, uint64 va) {
+  if (va < myproc()->heap_base || va >= myproc()->sz)
+    return -1;
+
+  va = PGROUNDDOWN(va);
+  void* mem = kalloc();
+  if(mem == 0){
+    uvmdealloc(pagetable, va, va + PGSIZE);
+    myproc()->killed = 1;  // 物理内容不足，直接把process kill掉
+    return -1;
+  }
+  memset(mem, 0, PGSIZE);
+  if(mappages(pagetable, va, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+    kfree(mem);
+    uvmdealloc(pagetable, va, va + PGSIZE);
+    return -1;
+  }
+
+  return 0;
+}
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -67,7 +89,14 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+  else if (r_scause() == 13 || r_scause() == 15) {
+    uint64 va = r_stval();
+    if (lazyalloc(p->pagetable, va) != 0) {
+        p->killed = 1;
+    }
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

@@ -47,8 +47,15 @@ sys_sbrk(void)
   if(argint(0, &n) < 0)
     return -1;
   addr = myproc()->sz;
-  if(growproc(n) < 0)
-    return -1;
+  // if(growproc(n) < 0)
+  //   return -1;
+
+  // 如果n为负数，需要把这部分内存释放掉
+  if (n < 0) {
+    uvmdealloc(myproc()->pagetable, addr, addr + n);
+  }
+
+  myproc()->sz += n;
   return addr;
 }
 
