@@ -1,0 +1,2 @@
+* Why are there missing keys with 2 threads, but not with 1 thread? Identify a sequence of events with 2 threads that can lead to a key being missing. 
+显然，key missing发生在插入新key的过程中。在ph.c的hash table中根据key划分kv对到不同的BUCKET中，每个BUCKET都是一个链表，当插入key时如果key已经存在那么更新对应节点的值，如果key不存在则新分配一个节点使用头插法插入到对应的BUCKET中。key missing发在多个线程在同一个BUCKET中同时insert的情况中，如线程1插入了新节点到BUCKET中，并更新BUCKET的头指针为最新的节点，如果线程2在insert时传入的n与线程1在insert时传入的n相同，那么线程1插入的节点就会丢失掉。
