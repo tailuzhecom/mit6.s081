@@ -85,8 +85,10 @@ sys_write(void)
   int n;
   uint64 p;
 
-  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
+  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0) {
     return -1;
+  }
+    
 
   return filewrite(f, p, n);
 }
@@ -126,25 +128,32 @@ sys_link(void)
     return -1;
 
   begin_op();
+  // 获取old的inode
   if((ip = namei(old)) == 0){
     end_op();
     return -1;
   }
 
   ilock(ip);
+  // 如果old为dir，返回-1
   if(ip->type == T_DIR){
     iunlockput(ip);
     end_op();
     return -1;
   }
 
+  // 如果old不为dir，增加对应inode的nlink
   ip->nlink++;
+  // 更新dinode
   iupdate(ip);
   iunlock(ip);
 
+  // 获取new父目录的inode
   if((dp = nameiparent(new, name)) == 0)
     goto bad;
   ilock(dp);
+
+  // 如果new和old不在同一设备上，或者写入dirent信息时出错
   if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
     iunlockput(dp);
     goto bad;
@@ -244,37 +253,46 @@ create(char *path, short type, short major, short minor)
   struct inode *ip, *dp;
   char name[DIRSIZ];
 
+  // 获取父目录的inode
   if((dp = nameiparent(path, name)) == 0)
     return 0;
 
   ilock(dp);
 
+  // 查看父目录中是否已经存在对应的文件
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
     ilock(ip);
+    // 如果文件类型和设备相同，直接返回inode
     if(type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
       return ip;
     iunlockput(ip);
     return 0;
   }
 
+  // 如果父目录中不存在对应的文件，分配一个inode
   if((ip = ialloc(dp->dev, type)) == 0)
     panic("create: ialloc");
 
+  // 初始化inode
   ilock(ip);
   ip->major = major;
   ip->minor = minor;
   ip->nlink = 1;
   iupdate(ip);
 
+  // 如果创建的类型为dir
   if(type == T_DIR){  // Create . and .. entries.
+    // 增加父目录inode中的nlink
     dp->nlink++;  // for ".."
+    // 更新父目录dinode
     iupdate(dp);
     // No ip->nlink++ for ".": avoid cyclic ref count.
     if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
       panic("create dots");
   }
 
+  // 在父目录inode中写入该文件的dirent
   if(dirlink(dp, name, ip->inum) < 0)
     panic("create: dirlink");
 
@@ -314,7 +332,37 @@ sys_open(void)
       end_op();
       return -1;
     }
+
+    if ((omode & O_NOFOLLOW) == 0) {
+      int loop_limit = 10;
+      int nloop = 0;
+    
+      while (ip->type == T_SYMLINK && nloop < loop_limit) {
+          nloop++;
+          char symlink[MAXPATH];
+
+          if (readi(ip, 0, (uint64)symlink, 0, MAXPATH) != MAXPATH) {
+            iunlockput(ip);
+            end_op();
+            return -1;
+          }
+
+          iunlockput(ip);
+          if ((ip = namei(symlink)) == 0) {
+            end_op();
+            return -1;
+          }
+          ilock(ip);
+      }
+    
+      if (ip->type == T_SYMLINK) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+    }
   }
+  
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
@@ -349,6 +397,31 @@ sys_open(void)
   end_op();
 
   return fd;
+}
+
+uint64 sys_symlink(void) {
+  char new[MAXPATH], old[MAXPATH];
+  struct inode *ip;
+
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+  if ((ip = create(new, T_SYMLINK, 0, 0)) == 0) {
+    end_op();
+    return -1;
+  }
+
+  if (writei(ip, 0, (uint64)old, 0, MAXPATH) != MAXPATH) {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
+
+  return 0;
 }
 
 uint64

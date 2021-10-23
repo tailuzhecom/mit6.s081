@@ -24,9 +24,9 @@ struct inode {
   short type;         // copy of disk inode
   short major;
   short minor;
-  short nlink;
-  uint size;
-  uint addrs[NDIRECT+1];
+  short nlink;  // 有多少个dir entry指向这个inode
+  uint size;  // 记录的有效信息的大小
+  uint addrs[NDIRECT+2];
 };
 
 // map major device number to device functions.

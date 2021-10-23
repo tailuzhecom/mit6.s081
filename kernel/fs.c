@@ -61,6 +61,7 @@ bzero(int dev, int bno)
 // Blocks.
 
 // Allocate a zeroed disk block.
+// 返回block num
 static uint
 balloc(uint dev)
 {
@@ -68,10 +69,14 @@ balloc(uint dev)
   struct buf *bp;
 
   bp = 0;
+  // 对每个block进行遍历
   for(b = 0; b < sb.size; b += BPB){
+    // 从disk中读取bitmap对应的block
     bp = bread(dev, BBLOCK(b, sb));
+    // 遍历bitmap
     for(bi = 0; bi < BPB && b + bi < sb.size; bi++){
       m = 1 << (bi % 8);
+      // 通过bitmap查看对应的block是否空闲
       if((bp->data[bi/8] & m) == 0){  // Is block free?
         bp->data[bi/8] |= m;  // Mark block in use.
         log_write(bp);
@@ -200,13 +205,16 @@ ialloc(uint dev, short type)
   struct dinode *dip;
 
   for(inum = 1; inum < sb.ninodes; inum++){
+    // IBLOCK计算inum所在的block
     bp = bread(dev, IBLOCK(inum, sb));
+    // inum % IPB为dinode在该block中的idx
     dip = (struct dinode*)bp->data + inum%IPB;
     if(dip->type == 0){  // a free inode
       memset(dip, 0, sizeof(*dip));
       dip->type = type;
       log_write(bp);   // mark it allocated on the disk
       brelse(bp);
+      // 返回该dinode对应的inode
       return iget(dev, inum);
     }
     brelse(bp);
@@ -223,7 +231,7 @@ iupdate(struct inode *ip)
 {
   struct buf *bp;
   struct dinode *dip;
-
+  // 读取dinode所在的buffer
   bp = bread(ip->dev, IBLOCK(ip->inum, sb));
   dip = (struct dinode*)bp->data + ip->inum%IPB;
   dip->type = ip->type;
@@ -249,11 +257,13 @@ iget(uint dev, uint inum)
   // Is the inode already cached?
   empty = 0;
   for(ip = &icache.inode[0]; ip < &icache.inode[NINODE]; ip++){
+    // 如果inode cache中存在对应的缓存，返回inode
     if(ip->ref > 0 && ip->dev == dev && ip->inum == inum){
       ip->ref++;
       release(&icache.lock);
       return ip;
     }
+    // 记录一个空闲inode，如果没有对应缓存则使用这个空闲inode
     if(empty == 0 && ip->ref == 0)    // Remember empty slot.
       empty = ip;
   }
@@ -262,6 +272,7 @@ iget(uint dev, uint inum)
   if(empty == 0)
     panic("iget: no inodes");
 
+  // 初始化inode
   ip = empty;
   ip->dev = dev;
   ip->inum = inum;
@@ -380,21 +391,58 @@ bmap(struct inode *ip, uint bn)
   uint addr, *a;
   struct buf *bp;
 
+  // 如果是direct block
   if(bn < NDIRECT){
+    // 为直接block分配block
     if((addr = ip->addrs[bn]) == 0)
       ip->addrs[bn] = addr = balloc(ip->dev);
     return addr;
   }
-  bn -= NDIRECT;
 
-  if(bn < NINDIRECT){
+  // 一级间接索引
+  bn -= NDIRECT;
+  if(bn < SINGLY_NUM){
     // Load indirect block, allocating if necessary.
+    // 为间接block分配block
     if((addr = ip->addrs[NDIRECT]) == 0)
       ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+    // addr为block num
+    // 获取该block对应的buffer
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
+    // 读取一级间接block中的block信息
+    // 如果该block未分配则调用balloc进行分配
     if((addr = a[bn]) == 0){
       a[bn] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    return addr;
+  }
+
+  // 二级间接索引
+  bn -= SINGLY_NUM;
+  if (bn < DOUBLY_NUM) {
+    int idx1 = bn / 256;
+    int idx2 = bn % 256;
+
+    if ((addr = ip->addrs[12]) == 0)
+      ip->addrs[12] = addr = balloc(ip->dev);
+
+    // 读取一级索引
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if ((addr = a[idx1]) == 0) {
+      a[idx1] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+
+    // 读取二级索引
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if ((addr = a[idx2]) == 0) {
+      a[idx2] = addr = balloc(ip->dev);
       log_write(bp);
     }
     brelse(bp);
@@ -410,9 +458,10 @@ void
 itrunc(struct inode *ip)
 {
   int i, j;
-  struct buf *bp;
-  uint *a;
+  struct buf *bp, *bp1, *bp2;
+  uint *a1, *a2;
 
+  // 释放直接索引
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
@@ -420,16 +469,40 @@ itrunc(struct inode *ip)
     }
   }
 
+  // 释放一级间接索引
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
-    a = (uint*)bp->data;
-    for(j = 0; j < NINDIRECT; j++){
-      if(a[j])
-        bfree(ip->dev, a[j]);
+    a1 = (uint*)bp->data;
+    for(j = 0; j < SINGLY_NUM; j++){
+      if(a1[j])
+        bfree(ip->dev, a1[j]);
     }
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+  // 释放二级间接索引
+  if (ip->addrs[12]) {
+    bp1 = bread(ip->dev, ip->addrs[12]);
+    a1 = (uint*)bp1->data;
+    for (i = 0; i < 256; i++) {
+      // 如果一级索引存在
+      if (a1[i]) {
+        bp2 = bread(ip->dev, a1[i]);
+        a2 = (uint*)bp2->data;
+        for (j = 0; j < 256; j++) {
+          // 如果二级索引存在
+          if (a2[j])
+            bfree(ip->dev, a2[j]);
+        }
+        brelse(bp2);
+        bfree(ip->dev, a1[i]);
+      }
+    }
+    brelse(bp1);
+    bfree(ip->dev, ip->addrs[12]);
+    ip->addrs[12] = 0;
   }
 
   ip->size = 0;
@@ -452,19 +525,29 @@ stati(struct inode *ip, struct stat *st)
 // Caller must hold ip->lock.
 // If user_dst==1, then dst is a user virtual address;
 // otherwise, dst is a kernel address.
+// 读取inode中的数据到dst，文件的偏移量为off，读取的字节数为n
 int
 readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 {
   uint tot, m;
   struct buf *bp;
-
+  // 如果offset大于inode的size，或者offset + n溢出，返回0
   if(off > ip->size || off + n < off)
     return 0;
+
+  // 如果off + n大于inode的size，那么对off进行截断  
   if(off + n > ip->size)
     n = ip->size - off;
 
+  // 从inode中读取n个字节
   for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
+    // bmap返回off对应block的block num
+    // bread获取对应block的buffer
     bp = bread(ip->dev, bmap(ip, off/BSIZE));
+    // n - tot为需要读取的剩余字节数
+    // off % BSIZE为在当前block读取的offset
+    // BSIZE - off % BSIZE为当前block可以读取的最大字节数
+    // m为本次循环读取的字节数
     m = min(n - tot, BSIZE - off%BSIZE);
     if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) {
       brelse(bp);
@@ -483,19 +566,30 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 // Returns the number of bytes successfully written.
 // If the return value is less than the requested n,
 // there was an error of some kind.
+// 将src中的数据写入到inode对应的文件中，文件偏移量为off，写入的字节数为n
 int
 writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
 {
   uint tot, m;
   struct buf *bp;
 
+  // 如果offset大于inode的size，或者offset + n溢出，返回0
   if(off > ip->size || off + n < off)
     return -1;
+
+  // 如果写入数据后大于xv6所支持的最大文件上限，返回-1  
   if(off + n > MAXFILE*BSIZE)
     return -1;
 
   for(tot=0; tot<n; tot+=m, off+=m, src+=m){
+    // bmap返回off对应block的block num
+    // bread获取对应block的buffer
     bp = bread(ip->dev, bmap(ip, off/BSIZE));
+
+    // n - tot为需要读取的剩余字节数
+    // off % BSIZE为在当前block读取的offset
+    // BSIZE - off % BSIZE为当前block可以读取的最大字节数
+    // m为本次循环读取的字节数
     m = min(n - tot, BSIZE - off%BSIZE);
     if(either_copyin(bp->data + (off % BSIZE), user_src, src, m) == -1) {
       brelse(bp);
@@ -505,12 +599,14 @@ writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
     brelse(bp);
   }
 
+  // 更新inode的size
   if(off > ip->size)
     ip->size = off;
 
   // write the i-node back to disk even if the size didn't change
   // because the loop above might have called bmap() and added a new
   // block to ip->addrs[].
+  // 更新dinode
   iupdate(ip);
 
   return tot;
@@ -535,11 +631,15 @@ dirlookup(struct inode *dp, char *name, uint *poff)
   if(dp->type != T_DIR)
     panic("dirlookup not DIR");
 
+  // 在dp对应的信息中查找是否存在名称为name的dirent
   for(off = 0; off < dp->size; off += sizeof(de)){
+    // 读取dp中的dirent
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlookup read");
     if(de.inum == 0)
       continue;
+
+    // 如果存在名称为name的dirent，返回对应的inode  
     if(namecmp(name, de.name) == 0){
       // entry matches path element
       if(poff)
@@ -553,6 +653,7 @@ dirlookup(struct inode *dp, char *name, uint *poff)
 }
 
 // Write a new directory entry (name, inum) into the directory dp.
+// 在dp中新增一个dirent信息
 int
 dirlink(struct inode *dp, char *name, uint inum)
 {
@@ -561,6 +662,7 @@ dirlink(struct inode *dp, char *name, uint inum)
   struct inode *ip;
 
   // Check that name is not present.
+  // 如果dp中已经存在名称为name的dirent
   if((ip = dirlookup(dp, name, 0)) != 0){
     iput(ip);
     return -1;
@@ -570,12 +672,15 @@ dirlink(struct inode *dp, char *name, uint inum)
   for(off = 0; off < dp->size; off += sizeof(de)){
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlink read");
+
+    // 获取一个空闲的dirent  
     if(de.inum == 0)
       break;
   }
 
   strncpy(de.name, name, DIRSIZ);
   de.inum = inum;
+  // 写入新的dirent信息
   if(writei(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
     panic("dirlink");
 
@@ -595,7 +700,7 @@ dirlink(struct inode *dp, char *name, uint inum)
 //   skipelem("///a//bb", name) = "bb", setting name = "a"
 //   skipelem("a", name) = "", setting name = "a"
 //   skipelem("", name) = skipelem("////", name) = 0
-//
+// name为首个元素，返回值为以第二个元素开头的path（不以'/'开头）
 static char*
 skipelem(char *path, char *name)
 {
@@ -630,22 +735,29 @@ namex(char *path, int nameiparent, char *name)
 {
   struct inode *ip, *next;
 
+  // 以'/'开头从根目录开始查找，否则从当前路径开始查找
+  // 获取第一个dir的inode
   if(*path == '/')
     ip = iget(ROOTDEV, ROOTINO);
   else
     ip = idup(myproc()->cwd);
 
+  // 不断获取路径中的首个元素，返回下个元素为开头的路径
   while((path = skipelem(path, name)) != 0){
     ilock(ip);
     if(ip->type != T_DIR){
       iunlockput(ip);
       return 0;
     }
+
+    // 返回parent的inode，此时name为最后一个元素
     if(nameiparent && *path == '\0'){
       // Stop one level early.
       iunlock(ip);
       return ip;
     }
+
+    // 查找当前dir中是否存在名称为name的dirent
     if((next = dirlookup(ip, name, 0)) == 0){
       iunlockput(ip);
       return 0;
@@ -660,6 +772,7 @@ namex(char *path, int nameiparent, char *name)
   return ip;
 }
 
+// 获取path对应的inode
 struct inode*
 namei(char *path)
 {
@@ -667,6 +780,7 @@ namei(char *path)
   return namex(path, 0, name);
 }
 
+// 返回上一级目录的inode
 struct inode*
 nameiparent(char *path, char *name)
 {
