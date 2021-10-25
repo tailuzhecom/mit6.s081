@@ -301,6 +301,18 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
+  
+  // 拷贝VMA
+  struct VMA *vma_ptr = 0;
+  for (int i = 0; i < NVMA; i++) {
+    struct VMA *cur_vma = np->vma_array + i;
+    vma_ptr = p->vma_array + i;
+    
+    if (vma_ptr->f) {
+      memmove(cur_vma, vma_ptr, sizeof(struct VMA));
+      filedup(cur_vma->f);
+    }
+  }
 
   release(&np->lock);
 

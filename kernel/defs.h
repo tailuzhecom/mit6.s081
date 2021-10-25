@@ -3,11 +3,13 @@ struct context;
 struct file;
 struct inode;
 struct pipe;
+struct VMA;
 struct proc;
 struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+
 
 // bio.c
 void            binit(void);
@@ -33,6 +35,7 @@ void            fileinit(void);
 int             fileread(struct file*, uint64, int n);
 int             filestat(struct file*, uint64 addr);
 int             filewrite(struct file*, uint64, int n);
+int             filewrite_mmap(struct file *f, uint64 addr, int n, int offset);
 
 // fs.c
 void            fsinit(int);

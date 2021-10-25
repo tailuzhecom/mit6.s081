@@ -1,3 +1,5 @@
+
+
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -81,6 +83,16 @@ struct trapframe {
 };
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+struct VMA {
+  uint addr;
+  int offset;
+  int length;
+  int prot;
+  int flags;
+  struct file *f;
+};
+
+#define NVMA 16
 
 // Per-process state
 struct proc {
@@ -103,4 +115,6 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  struct VMA vma_array[NVMA];
 };

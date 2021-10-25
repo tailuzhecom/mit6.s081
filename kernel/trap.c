@@ -5,6 +5,18 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+
+struct file {
+  enum { FD_NONE, FD_PIPE, FD_INODE, FD_DEVICE } type;
+  int ref; // reference count
+  char readable;
+  char writable;
+  struct pipe *pipe; // FD_PIPE
+  struct inode *ip;  // FD_INODE and FD_DEVICE
+  uint off;          // FD_INODE
+  short major;       // FD_DEVICE
+};
 
 struct spinlock tickslock;
 uint ticks;
@@ -67,7 +79,57 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+  else if (r_scause() == 13 || r_scause() == 15) { // page fault
+    uint64 va = r_stval();
+    struct proc *cur_proc = myproc();
+    struct VMA *cur_vma = 0;
+
+    for (int i = 0; i < NVMA; i++) {
+      // 如果vm在vma的范围内
+      if (cur_proc->vma_array[i].f && va >= cur_proc->vma_array[i].addr && va < cur_proc->vma_array[i].addr + cur_proc->vma_array[i].length) {
+        cur_vma = cur_proc->vma_array + i;
+        break;
+      }
+    }
+
+    // 如果是mmap导致的page fault
+    if (cur_vma) {
+      // 为该页分配物理内容
+      void *mem = kalloc();
+      if (mem == 0) {
+        cur_proc->killed = 1;
+        exit(-1);
+      }
+      memset(mem, 0, PGSIZE);
+
+      // 加载va所在页
+      uint64 page_addr = PGROUNDDOWN(va);
+      uint64 offset = page_addr - cur_vma->addr;
+      struct file *f = cur_vma->f;
+      ilock(f->ip);
+      readi(cur_vma->f->ip, 0, (uint64)mem, offset, PGSIZE);
+      iunlock(cur_vma->f->ip);
+
+      int perm = PTE_U;
+      if (cur_vma->prot & PROT_READ)
+        perm |= PTE_R;
+      if (cur_vma->prot & PROT_WRITE)
+        perm |= PTE_W;
+      if (cur_vma->prot & PROT_EXEC)
+        perm |= PTE_X;
+
+      if (mappages(cur_proc->pagetable, page_addr, PGSIZE, (uint64)mem, perm) < 0) {
+        kfree(mem);
+        printf("mmap handler: mappages fail\n");
+        cur_proc->killed = -1;
+      }
+    }
+    else {
+      cur_proc->killed = 1;
+    }
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

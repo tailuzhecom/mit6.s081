@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "defs.h"
 #include "elf.h"
+#include "fcntl.h"
 
 static int loadseg(pde_t *pgdir, uint64 addr, struct inode *ip, uint offset, uint sz);
 
@@ -116,6 +117,20 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  // 释放vma
+  struct VMA *vma_ptr;
+  for (int i = 0; i < NVMA; i++) {
+    vma_ptr = p->vma_array + i;
+    if (vma_ptr->f) {
+      if (vma_ptr->flags & MAP_SHARED)
+        filewrite_mmap(vma_ptr->f, vma_ptr->addr, vma_ptr->length, vma_ptr->offset);
+      uvmunmap(p->pagetable, vma_ptr->addr, PGROUNDUP(vma_ptr->length) / PGSIZE, 1);
+      fileclose(vma_ptr->f);
+    }
+      
+    memset(vma_ptr, 0, sizeof(struct VMA));
+  }
+ 
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:

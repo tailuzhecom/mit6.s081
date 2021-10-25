@@ -115,6 +115,97 @@ sys_fstat(void)
   return filestat(f, st);
 }
 
+// mmap的addr和offset始终为0，不需要处理
+uint64 sys_mmap(void) {
+  int length, prot, flags;
+  struct file *f;
+  struct VMA *free_vma = 0;
+
+  struct proc *cur_proc = myproc();
+  
+  if(argint(1, &length) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0 || argfd(4, 0, &f) < 0)
+    return 0xffffffffffffffff;
+
+  if ((flags & MAP_SHARED) && (prot & PROT_WRITE) && !f->writable)
+    return 0xffffffffffffffff;
+
+  for (int i = 0; i < NVMA; i++) {
+    if (cur_proc->vma_array[i].f == 0) {
+      free_vma = cur_proc->vma_array + i;
+      break;
+    }
+  }
+
+  if (free_vma == 0) {
+    return 0xffffffffffffffff;
+  }
+
+  free_vma->addr = cur_proc->sz;
+  free_vma->offset = 0;
+  free_vma->length = length;
+  free_vma->prot = prot;
+  free_vma->flags = flags;
+  free_vma->f = f;
+
+  cur_proc->sz += length;
+  filedup(f);
+
+  return free_vma->addr;
+} 
+
+uint64 sys_munmap(void) {
+  uint64 addr;
+  int length;
+  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0)
+    return -1;
+
+  struct proc *cur_proc = myproc();
+
+  struct VMA *cur_vma = 0;
+  for (int i = 0; i < NVMA; i++) {
+    // 如果vm在vma的范围内
+    if (addr >= cur_proc->vma_array[i].addr && addr < cur_proc->vma_array[i].addr + cur_proc->vma_array[i].length) {
+      cur_vma = cur_proc->vma_array + i;
+      break;
+    }
+  }
+
+  if (cur_vma) {
+    if (addr == cur_vma->addr) {
+      if (length == cur_vma->length) {
+        if (cur_vma->flags & MAP_SHARED)
+          filewrite_mmap(cur_vma->f, addr, length, cur_vma->offset);
+        fileclose(cur_vma->f);
+        uvmunmap(cur_proc->pagetable, addr, PGROUNDUP(length) / PGSIZE, 1);
+        memset(cur_vma, 0, sizeof(struct VMA));
+      }
+      else {
+        if (cur_vma->flags & MAP_SHARED)
+          filewrite_mmap(cur_vma->f, addr, length, cur_vma->offset);
+        uvmunmap(cur_proc->pagetable, addr, PGROUNDUP(length) / PGSIZE, 1);
+        cur_vma->addr += length;
+        cur_vma->offset += length;
+        cur_vma->length -= length;
+      }
+    }
+    else if (addr + length == cur_vma->addr + cur_vma->length) {
+        if (cur_vma->flags & MAP_SHARED)
+          filewrite_mmap(cur_vma->f, addr, length, cur_vma->offset);
+        uvmunmap(cur_proc->pagetable, addr, PGROUNDUP(length) / PGSIZE, 1);
+        cur_vma->length -= length;
+    }
+    else {
+      printf("addr not start at the beginning of vma\n");
+      return -1;
+    }
+  }
+  else {
+    return -1;
+  }
+
+  return 0;
+}
+
 // Create the path new as a link to the same inode as old.
 uint64
 sys_link(void)
